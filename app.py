@@ -5,19 +5,27 @@ import re
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-# レビュー申請情報を管理するグローバル辞書（キーはレビュー用メッセージの ts）
-review_requests = {}
-
-# 環境変数の取得
+# Slack アプリの各種環境変数の読み込み
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
-SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET")
-SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
-# 初期レビュワーID（カンマ区切り、例："U12345,U67890"）を空文字を除いてリストにする
+SIGNING_SECRET = os.environ.get("SIGNING_SECRET")  # 従来の SLACK_SIGNING_SECRET の代わりに利用
+SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")  # Socket Mode 用のトークン
+
+# OAuth やその他の設定用環境変数
+APP_ID = os.environ.get("APP_ID")
+CLIENT_ID = os.environ.get("CLIENT_ID")
+CLIENT_SECRET = os.environ.get("CLIENT_SECRET")
+VERIFICATION_TOKEN = os.environ.get("VERIFICATION_TOKEN")
+# 複数の App-Level Tokens をカンマ区切りで指定（最大10個）
+APP_LEVEL_TOKENS = [token.strip() for token in os.environ.get("APP_LEVEL_TOKENS", "").split(",") if token.strip()]
+
+# 初期レビュワーと承認必要件数
 REVIEWER_IDS = [uid for uid in os.environ.get("REVIEWER_IDS", "").split(",") if uid.strip()]
-# 承認に必要な件数（例：2）
 REQUIRED_APPROVALS = int(os.environ.get("REQUIRED_APPROVALS", "2"))
 
-app = App(token=SLACK_BOT_TOKEN, signing_secret=SLACK_SIGNING_SECRET)
+app = App(token=SLACK_BOT_TOKEN, signing_secret=SIGNING_SECRET)
+
+# レビュー申請情報を管理するグローバル辞書（キーはレビュー用メッセージの ts）
+review_requests = {}
 
 # レビュー申請の構造体
 class ReviewRequest:
@@ -134,7 +142,7 @@ def handle_review_command(ack, body, logger):
         )
         return
 
-    # レビュワーへのメンション文を作成（現在のレビュワーリストから生成）
+    # 現在のレビュワーリストからメンション文字列を生成
     reviewer_mentions = " ".join([f"<@{uid.strip()}>" for uid in REVIEWER_IDS if uid.strip()])
     review_message = (
         f"<@{user_id}>さんより {reviewer_mentions} に投稿チェックが届いています。\n"
@@ -219,7 +227,7 @@ def handle_reaction_removed(event, logger):
             review.reject_timer.cancel()
             review.reject_timer = None
 
-# /twitter_post コマンド：Twitterへの投稿実行（シミュレーション）
+# /twitter_post コマンド：Twitter への投稿実行（シミュレーション）
 @app.command("/twitter_post")
 def handle_twitter_post(ack, body, logger):
     ack()
@@ -242,7 +250,7 @@ def handle_twitter_post(ack, body, logger):
         text=f"<@{user_id}>さんの投稿がTwitterで実行されました。"
     )
 
-# /insta_post コマンド：Instagramへの投稿実行（シミュレーション）
+# /insta_post コマンド：Instagram への投稿実行（シミュレーション）
 @app.command("/insta_post")
 def handle_insta_post(ack, body, logger):
     ack()
@@ -265,7 +273,7 @@ def handle_insta_post(ack, body, logger):
         text=f"<@{user_id}>さんの投稿がInstagramで実行されました。"
     )
 
-# /all_post コマンド：全SNSへの投稿実行（シミュレーション）
+# /all_post コマンド：全 SNS への投稿実行（シミュレーション）
 @app.command("/all_post")
 def handle_all_post(ack, body, logger):
     ack()
@@ -288,7 +296,7 @@ def handle_all_post(ack, body, logger):
         text=f"<@{user_id}>さんの投稿が全てのSNSで実行されました。"
     )
 
-# /register コマンド：指定されたユーザーをレビュワー（認証者）に追加する
+# /register コマンド：Slack のメンション形式（例：/register <@USERID>）でレビュワー（認証者）を追加
 @app.command("/register")
 def handle_register(ack, body, logger):
     ack()
@@ -304,7 +312,7 @@ def handle_register(ack, body, logger):
         )
         return
 
-    # Slackのメンション形式で指定されているか確認
+    # Slack のメンション形式で指定されているか確認
     match = re.search(r"<@([A-Z0-9]+)(?:\|[^>]+)?>", text)
     if not match:
         app.client.chat_postEphemeral(
