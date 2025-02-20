@@ -4,6 +4,7 @@ import threading
 import re
 import logging
 import datetime  # 日時操作用
+import requests  # （従来のURL経由の場合のため）
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from dotenv import load_dotenv
@@ -34,14 +35,20 @@ app = App(token=SLACK_BOT_TOKEN, signing_secret=SIGNING_SECRET)
 # レビュー中の投稿は1件のみ管理するためのグローバル変数
 review_request = None
 
-# レビュー申請の構造体（タイトルの概念はなく、SNS種別を保持）
+
 class ReviewRequest:
+    """
+    レビュー申請の構造体（SNS種別、本文、画像などを保持）
+    images には (file_id, None) のタプルを格納します。
+    ※ユーザーが直接アップロードした場合、ファイル情報から file_id を利用し、
+      Block Kit の画像ブロックでは slack_file プロパティを使って表示します。
+    """
     def __init__(self, author, sns, account, text, images, channel, ts):
         self.author = author            # 投稿者のユーザーID
         self.sns = sns                  # SNS種別（例: Twitter, Instagram など）
         self.account = account          # 投稿アカウント
         self.text = text                # 本文
-        self.images = images            # 添付画像リスト
+        self.images = images            # [(file_id, None), ... ]
         self.channel = channel          # チャンネルID
         self.ts = ts                    # レビュー申請メッセージのタイムスタンプ
         self.approvals = {}             # 承認したユーザー {user_id: 承認時刻}
@@ -64,59 +71,92 @@ class ReviewRequest:
         if user in self.rejections:
             del self.rejections[user]
 
-# レビュー申請メッセージの更新（承認件数・リジェクト状況を反映）
-def update_review_message(review: ReviewRequest):
+
+def build_review_blocks(review: ReviewRequest) -> list:
+    """
+    レビュー内容（SNS種別・アカウント・本文・画像）および承認状況などを
+    Block Kit 形式で表示するためのブロック配列を返します。
+    """
     approvals_count = len(review.approvals)
-    message = (
-        f"<@{review.author}>さんの投稿レビュー\n"
-        f"【SNS】 {review.sns}\n"
-        f"【投稿アカウント】 {review.account}\n"
-        f"【承認】 {approvals_count}/{REQUIRED_APPROVALS}\n"
-    )
-    if review.approved:
-        message += "→ 承認済み。投稿可能です。"
-    elif review.rejected:
-        message += "→ リジェクト済み。"
+    
+    # リジェクト情報のメッセージ生成
+    reject_info = ""
+    if review.rejected:
+        reject_info = "→ リジェクト済み。"
     elif review.rejections:
-        # 最初にリジェクトしたユーザーと時刻を表示
         first_reject_time_str = min(review.rejections.values())
-        first_rejecter = next(user for user, t in review.rejections.items() if t == first_reject_time_str)
+        first_rejecter = next(u for u, t in review.rejections.items() if t == first_reject_time_str)
         dt = datetime.datetime.strptime(first_reject_time_str, "%Y-%m-%d-%H:%M")
         formal_dt = dt + datetime.timedelta(minutes=5)
         formal_time_str = formal_dt.strftime("%Y-%m-%d-%H:%M")
-        message += (
-            f"\n<@{first_rejecter}>さんが{first_reject_time_str}にリジェクトしました。"
-            f" 5分後の{formal_time_str}に正式に拒否されます。"
-            " 間違って押した場合は5分以内に取り消しして下さい。"
+        reject_info = (
+            f"<@{first_rejecter}>さんが{first_reject_time_str}にリジェクトしました。"
+            f" 5分後（{formal_time_str}）に正式に拒否されます。"
+            " （間違った場合は5分以内にリアクションを取り消してください。）"
         )
-        message += "\n許可の場合は :review_accept: 、却下の場合は :review_reject: を押してください。"
+
+    description_text = f"""
+*<@{review.author}> さんの投稿レビュー*
+• SNS: *{review.sns}*
+• 投稿アカウント: *{review.account}*
+• 承認状況: {approvals_count}/{REQUIRED_APPROVALS}
+"""
+    if review.approved:
+        description_text += "\n→ *承認済み*。投稿可能です。"
+    elif review.rejected:
+        description_text += "\n→ *リジェクト済み*。"
     else:
-        message += "許可の場合は :review_accept: 、却下の場合は :review_reject: を押してください。"
-    
+        if review.rejections:
+            description_text += "\n" + reject_info
+        description_text += "\n許可の場合は :review_accept:、却下の場合は :review_reject: を押してください。"
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": description_text.strip()}
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*本文*\n```{review.text}```"}
+        }
+    ]
+
+    if review.images:
+        blocks.append({"type": "divider"})
+        for i, (file_id, _) in enumerate(review.images, start=1):
+            # プライベートファイルの場合、slack_file プロパティを利用して表示
+            blocks.append({
+                "type": "image",
+                "slack_file": {"id": file_id},
+                "alt_text": f"Attached image {i}"
+            })
+    return blocks
+
+
+def update_review_message(review: ReviewRequest):
+    """
+    レビュー申請メッセージを Block Kit で更新します。
+    """
+    blocks = build_review_blocks(review)
     app.client.chat_update(
         channel=review.channel,
         ts=review.ts,
-        text=message
+        text="（レビュー内容を更新しました）",
+        blocks=blocks
     )
 
-# /review コマンド：投稿内容をレビュー状態にする
+
 @app.command("/review")
 def handle_review_command(ack, body, logger):
     global review_request
     ack()
     user_id = body["user_id"]
     channel_id = body["channel_id"]
+
+    # コマンドテキストから、改行区切りで必要な情報（SNS, 投稿アカウント, 本文）を抽出
     text = body.get("text", "").strip()
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-
-    # すでにレビュー中の投稿がある場合はエラー
-    if review_request is not None:
-        app.client.chat_postEphemeral(
-            channel=channel_id,
-            user=user_id,
-            text="すでにレビュー中の投稿があります。"
-        )
-        return
 
     if len(lines) < 3:
         app.client.chat_postEphemeral(
@@ -177,20 +217,54 @@ def handle_review_command(ack, body, logger):
         )
         return
 
-    # 4行目以降は添付画像（最大3枚）
-    images = lines[3:]
-    if len(images) >= 4:
-        app.client.chat_postEphemeral(
-            channel=channel_id,
-            user=user_id,
-            text="エラー：添付画像は最大3枚までです。"
-        )
-        return
+    # 画像情報の取得：
+    # ユーザーが直接Slackにアップロードしたファイル情報は、通常ペイロード内の "files" キーに含まれます。
+    uploaded_images = []
+    files = body.get("files", [])
+    if files:
+        for file in files:
+            mime = file.get("mimetype", "")
+            if any(img in mime for img in ["image/png", "image/jpeg", "image/jpg", "image/gif"]):
+                file_id = file.get("id")
+                url_private = file.get("url_private")
+                # 画像の情報をログに出力
+                logger.debug("直接アップロードされた画像の情報: file_id: %s, url_private: %s", file_id, url_private)
+                uploaded_images.append((file_id, None))
+    else:
+        # ファイルがアップロードされていなければ、従来は4行目以降のURLを画像URLとして処理します（オプション）
+        image_urls = lines[3:]
+        if len(image_urls) >= 4:
+            app.client.chat_postEphemeral(
+                channel=channel_id,
+                user=user_id,
+                text="エラー：添付画像は最大3枚までです。"
+            )
+            return
+        for img_url in image_urls:
+            try:
+                r = requests.get(img_url)
+                if r.status_code != 200:
+                    raise ValueError(f"Failed to download image from {img_url}, status: {r.status_code}")
+                file_upload_res = app.client.files_upload(
+                    channels=channel_id,
+                    file=r.content,
+                    filename="uploaded.png"
+                )
+                file_id = file_upload_res["file"]["id"]
+                # URLをログ出力（プライベートURLはこの場合も利用可能）
+                private_url = file_upload_res["file"]["url_private"]
+                logger.debug("アップロードされた画像の情報（URL経由）: file_id: %s, url_private: %s", file_id, private_url)
+                uploaded_images.append((file_id, None))
+            except Exception as e:
+                logger.error(f"画像のアップロードに失敗しました: {e}")
+                app.client.chat_postEphemeral(
+                    channel=channel_id,
+                    user=user_id,
+                    text=f"画像のアップロードに失敗しました: {img_url}"
+                )
+                return
 
-    # レビュワーへのメンションを作成
-    reviewer_mentions = " ".join([f"<@{uid.strip()}>" for uid in REVIEWER_IDS if uid.strip()])
-    # ※ 初期メッセージを指定の文言に変更
-    review_message = f"<@{user_id}>さんの投稿レビューが {reviewer_mentions} に認証依頼が届いています。"
+    review_message = f"<@{user_id}>さんの投稿レビューが {' '.join(f'<@{uid}>' for uid in REVIEWER_IDS if uid.strip())} に認証依頼が届いています。"
     response = app.client.chat_postMessage(
         channel=channel_id,
         text=review_message
@@ -202,13 +276,13 @@ def handle_review_command(ack, body, logger):
         sns=sns,
         account=account,
         text=post_text,
-        images=images,
+        images=uploaded_images,
         channel=channel_id,
         ts=ts
     )
     update_review_message(review_request)
 
-# リアクション追加イベント：承認・却下の処理
+
 @app.event("reaction_added")
 def handle_reaction_added(event, logger):
     global review_request
@@ -223,7 +297,6 @@ def handle_reaction_added(event, logger):
     if reaction == "review_accept":
         review_request.add_approval(user, time.strftime("%Y-%m-%d-%H:%M"))
         update_review_message(review_request)
-        # 必要承認数に達した場合は承認状態にする
         if len(review_request.approvals) >= REQUIRED_APPROVALS and not review_request.approved:
             review_request.approved = True
             app.client.chat_postMessage(
@@ -231,7 +304,6 @@ def handle_reaction_added(event, logger):
                 text=f"<@{review_request.author}>さんの投稿は全てのレビュワーによって承認されました。"
             )
             update_review_message(review_request)
-
     elif reaction == "review_reject":
         review_request.add_rejection(user, time.strftime("%Y-%m-%d-%H:%M"))
         update_review_message(review_request)
@@ -239,26 +311,19 @@ def handle_reaction_added(event, logger):
             def finalize_rejection():
                 global review_request
                 if review_request and review_request.rejections and not review_request.approved:
-                    # 最初にリジェクトしたユーザーと時刻を取得
                     first_reject_time_str = min(review_request.rejections.values())
                     first_rejecter = next(u for u, t in review_request.rejections.items() if t == first_reject_time_str)
                     dt = datetime.datetime.strptime(first_reject_time_str, "%Y-%m-%d-%H:%M")
                     final_dt = dt + datetime.timedelta(minutes=5)
                     final_time_str = final_dt.strftime("%Y-%m-%d-%H:%M")
-                    # 元のレビュー投稿を削除
                     app.client.chat_delete(channel=review_request.channel, ts=review_request.ts)
-                    # 完全リジェクトの最終メッセージを投稿
                     final_message = f"<@{review_request.author}>さんの投稿は <@{first_rejecter}>さんによって、{final_time_str}に完全にリジェクトされました。"
-                    app.client.chat_postMessage(
-                        channel=review_request.channel,
-                        text=final_message
-                    )
-                    # レビュー状態を解除
+                    app.client.chat_postMessage(channel=review_request.channel, text=final_message)
                     review_request = None
             review_request.reject_timer = threading.Timer(300, finalize_rejection)
             review_request.reject_timer.start()
 
-# リアクション削除イベント：承認・却下の取り消し処理
+
 @app.event("reaction_removed")
 def handle_reaction_removed(event, logger):
     global review_request
@@ -275,7 +340,6 @@ def handle_reaction_removed(event, logger):
         if review_request.approved and len(review_request.approvals) < REQUIRED_APPROVALS:
             review_request.approved = False
         update_review_message(review_request)
-
     elif reaction == "review_reject":
         review_request.remove_rejection(user)
         update_review_message(review_request)
@@ -283,7 +347,7 @@ def handle_reaction_removed(event, logger):
             review_request.reject_timer.cancel()
             review_request.reject_timer = None
 
-# /post コマンド：投稿実行（引数不要）
+
 @app.command("/post")
 def handle_post_command(ack, body, logger):
     global review_request
@@ -299,15 +363,13 @@ def handle_post_command(ack, body, logger):
         )
         return
 
-    # シミュレーションとして投稿実行
     app.client.chat_postMessage(
         channel=channel_id,
         text=f"<@{user_id}>さんの投稿が{review_request.sns}で実行されました。"
     )
-    # 投稿後はレビュー状態を解除
     review_request = None
 
-# /register コマンド：レビュワーの追加
+
 @app.command("/register")
 def handle_register(ack, body, logger):
     ack()
@@ -335,7 +397,6 @@ def handle_register(ack, body, logger):
             possible_name = text
 
         logger.debug(f"Try to find Slack user whose display_name, real_name, or name is '{possible_name}'")
-
         try:
             all_members = []
             cursor = None
@@ -390,6 +451,7 @@ def handle_register(ack, body, logger):
         channel=channel_id,
         text=f"<@{new_reviewer}> をレビュワーに追加しました。"
     )
+
 
 if __name__ == "__main__":
     handler = SocketModeHandler(app, SLACK_APP_TOKEN)
