@@ -2,20 +2,22 @@ import os
 import time
 import threading
 import re
+import logging
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-# Slack アプリの各種環境変数の読み込み
-SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
-SIGNING_SECRET = os.environ.get("SIGNING_SECRET")  # 従来の SLACK_SIGNING_SECRET の代わりに利用
-SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")  # Socket Mode 用のトークン
+# ログ設定：DEBUGレベルのログをコンソールに出力
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
-# OAuth やその他の設定用環境変数
+# Slackアプリの各種環境変数の読み込み
+SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
+SIGNING_SECRET = os.environ.get("SIGNING_SECRET")
+SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
 APP_ID = os.environ.get("APP_ID")
 CLIENT_ID = os.environ.get("CLIENT_ID")
 CLIENT_SECRET = os.environ.get("CLIENT_SECRET")
 VERIFICATION_TOKEN = os.environ.get("VERIFICATION_TOKEN")
-# 複数の App-Level Tokens をカンマ区切りで指定（最大10個）
 APP_LEVEL_TOKENS = [token.strip() for token in os.environ.get("APP_LEVEL_TOKENS", "").split(",") if token.strip()]
 
 # 初期レビュワーと承認必要件数
@@ -88,14 +90,12 @@ def handle_review_command(ack, body, logger):
     text = body.get("text", "").strip()
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
-    # 必要な行数は最低3行（タイトル、投稿アカウント、本文）
     if len(lines) < 3:
         app.client.chat_postEphemeral(
             channel=channel_id, user=user_id, text="フォーマットエラー：必要な情報が不足しています。"
         )
         return
 
-    # タイトル行（"## " で始まる）
     if not lines[0].startswith("## "):
         app.client.chat_postEphemeral(
             channel=channel_id, user=user_id, text="フォーマットエラー：タイトル行の形式が正しくありません。"
@@ -108,7 +108,6 @@ def handle_review_command(ack, body, logger):
         )
         return
 
-    # 投稿アカウント行（"## " で始まる）
     if not lines[1].startswith("## "):
         app.client.chat_postEphemeral(
             channel=channel_id, user=user_id, text="フォーマットエラー：投稿アカウント行の形式が正しくありません。"
@@ -121,7 +120,6 @@ def handle_review_command(ack, body, logger):
         )
         return
 
-    # 本文行（">" で始まる）
     if not lines[2].startswith(">"):
         app.client.chat_postEphemeral(
             channel=channel_id, user=user_id, text="フォーマットエラー：テキスト文章行の形式が正しくありません。"
@@ -134,7 +132,6 @@ def handle_review_command(ack, body, logger):
         )
         return
 
-    # 3行目以降は添付画像とみなす（任意、ただし画像は最大3枚まで）
     images = lines[3:]
     if len(images) >= 4:
         app.client.chat_postEphemeral(
@@ -142,7 +139,6 @@ def handle_review_command(ack, body, logger):
         )
         return
 
-    # 現在のレビュワーリストからメンション文字列を生成
     reviewer_mentions = " ".join([f"<@{uid.strip()}>" for uid in REVIEWER_IDS if uid.strip()])
     review_message = (
         f"<@{user_id}>さんより {reviewer_mentions} に投稿チェックが届いています。\n"
@@ -154,7 +150,6 @@ def handle_review_command(ack, body, logger):
     )
     review_ts = response["ts"]
 
-    # レビュー申請情報を作成し、グローバル辞書に保存
     review = ReviewRequest(
         author=user_id, title=title, account=account,
         text=post_text, images=images, channel=channel_id, ts=review_ts
@@ -170,16 +165,13 @@ def handle_reaction_added(event, logger):
     item = event.get("item", {})
     ts = item.get("ts")
     
-    # 対象のレビュー申請メッセージでなければ無視
     if ts not in review_requests:
         return
     review = review_requests[ts]
 
-    # 承認の場合
     if reaction == "review_accept":
         review.add_approval(user, time.strftime("%Y-%m-%d-%H:%M"))
         update_review_message(review)
-        # 必要承認数に達していれば承認確定
         if len(review.approvals) >= REQUIRED_APPROVALS and not review.approved:
             review.approved = True
             app.client.chat_postMessage(
@@ -187,8 +179,6 @@ def handle_reaction_added(event, logger):
                 text=f"<@{review.author}>さんの投稿は全てのレビュワーによって承認されました。"
             )
             update_review_message(review)
-
-    # 却下の場合（5分後に確定、取り消しがあればキャンセル）
     elif reaction == "review_reject":
         review.add_rejection(user, time.strftime("%Y-%m-%d-%H:%M"))
         update_review_message(review)
@@ -222,7 +212,6 @@ def handle_reaction_removed(event, logger):
     elif reaction == "review_reject":
         review.remove_rejection(user)
         update_review_message(review)
-        # 却下リアクションが全て解除された場合、タイマーをキャンセル
         if not review.rejections and review.reject_timer is not None:
             review.reject_timer.cancel()
             review.reject_timer = None
@@ -241,7 +230,8 @@ def handle_twitter_post(ack, body, logger):
             break
     if not review_found:
         app.client.chat_postEphemeral(
-            channel=channel_id, user=user_id, text="該当する承認済みの投稿が見つかりません。"
+            channel=channel_id, user=user_id,
+            text="該当する承認済みの投稿が見つかりません。"
         )
         return
 
@@ -264,7 +254,8 @@ def handle_insta_post(ack, body, logger):
             break
     if not review_found:
         app.client.chat_postEphemeral(
-            channel=channel_id, user=user_id, text="該当する承認済みの投稿が見つかりません。"
+            channel=channel_id, user=user_id,
+            text="該当する承認済みの投稿が見つかりません。"
         )
         return
 
@@ -287,7 +278,8 @@ def handle_all_post(ack, body, logger):
             break
     if not review_found:
         app.client.chat_postEphemeral(
-            channel=channel_id, user=user_id, text="該当する承認済みの投稿が見つかりません。"
+            channel=channel_id, user=user_id,
+            text="該当する承認済みの投稿が見つかりません。"
         )
         return
 
@@ -296,42 +288,45 @@ def handle_all_post(ack, body, logger):
         text=f"<@{user_id}>さんの投稿が全てのSNSで実行されました。"
     )
 
-# /register コマンド：Slack のメンション形式（例：/register <@USERID>）でレビュワー（認証者）を追加
+# /register コマンド：Slackのメンション形式（例：/register <@USERID>）でレビュワー（認証者）を追加
 @app.command("/register")
 def handle_register(ack, body, logger):
     ack()
     user_id = body["user_id"]
     channel_id = body["channel_id"]
     text = body.get("text", "").strip()
-
-    # テキストが空の場合エラー
+    
+    # 入力内容とその状態をデバッグログに出力
+    logger.debug("Received /register command from user %s in channel %s with text: %s", user_id, channel_id, text)
+    
     if not text:
-        app.client.chat_postEphemeral(
-            channel=channel_id, user=user_id,
-            text="エラー：追加するユーザーを指定してください。（例：/register <@USERID>）"
-        )
+        error_message = "エラー：追加するユーザーを指定してください。（例：/register <@USERID>）"
+        logger.debug("No text provided in /register command: %s", error_message)
+        app.client.chat_postEphemeral(channel=channel_id, user=user_id, text=error_message)
         return
 
-    # Slack のメンション形式で指定されているか確認
+    # Slackのメンション形式の確認
     match = re.search(r"<@([A-Z0-9]+)(?:\|[^>]+)?>", text)
+    logger.debug("Regex match result: %s", match)
+    
     if not match:
-        app.client.chat_postEphemeral(
-            channel=channel_id, user=user_id,
-            text="エラー：ユーザーはSlackのメンション形式で指定してください。（例：/register <@USERID>）"
-        )
+        error_message = "エラー：ユーザーはSlackのメンション形式で指定してください。（例：/register <@USERID>）"
+        logger.debug("User mention not in correct format. Input text: %s | Error: %s", text, error_message)
+        app.client.chat_postEphemeral(channel=channel_id, user=user_id, text=error_message)
         return
 
     new_reviewer = match.group(1)
-
+    logger.debug("Extracted new reviewer user ID: %s", new_reviewer)
+    
     global REVIEWER_IDS
     if new_reviewer in REVIEWER_IDS:
-        app.client.chat_postEphemeral(
-            channel=channel_id, user=user_id,
-            text=f"<@{new_reviewer}> は既にレビュワーに登録されています。"
-        )
+        error_message = f"<@{new_reviewer}> は既にレビュワーに登録されています。"
+        logger.debug("User already registered: %s", error_message)
+        app.client.chat_postEphemeral(channel=channel_id, user=user_id, text=error_message)
         return
 
     REVIEWER_IDS.append(new_reviewer)
+    logger.debug("New reviewer added: %s, updated REVIEWER_IDS: %s", new_reviewer, REVIEWER_IDS)
     app.client.chat_postMessage(
         channel=channel_id,
         text=f"<@{new_reviewer}> をレビュワーに追加しました。"
