@@ -9,8 +9,6 @@
 ## 環境変数
 
 ### Slack API Tokens
-Slack API の認証に必要な環境変数:
-
 - `SLACK_BOT_TOKEN`
 - `SIGNING_SECRET`
 - `SLACK_APP_TOKEN`
@@ -21,6 +19,26 @@ Slack API の認証に必要な環境変数:
 - `APP_LEVEL_TOKENS`
 
 ### 決議数
-承認に必要な決議数を指定する環境変数:
-
 - `REQUIRED_APPROVALS`
+
+## Scopes
+
+### Bot Token Scopes
+- `app_mentions:read`
+- `assistant:write`
+- `chat:write`
+- `commands`
+- `reactions:read`
+- `reactions:write`
+- `users:read`
+
+## コマンド
+- `/register`
+- `/review`
+- `/post`
+
+## Event Subscriptions
+
+### Bot イベントの購読
+- `reaction_added`
+- `reaction_removed`
