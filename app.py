@@ -3,6 +3,7 @@ import time
 import threading
 import re
 import logging
+import datetime  # 日時操作用に追加
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
@@ -28,7 +29,7 @@ APP_LEVEL_TOKENS = [
 REVIEWER_IDS = [
     uid for uid in os.environ.get("REVIEWER_IDS", "").split(",") if uid.strip()
 ]
-REQUIRED_APPROVALS = int(os.environ.get("REQUIRED_APPROVALS", "2"))
+REQUIRED_APPROVALS = int(os.environ.get("REQUIRED_APPROVALS", "1"))
 
 app = App(token=SLACK_BOT_TOKEN, signing_secret=SIGNING_SECRET)
 
@@ -46,7 +47,7 @@ class ReviewRequest:
         self.channel = channel          # チャンネルID
         self.ts = ts                    # レビュー申請メッセージのタイムスタンプ
         self.approvals = {}             # 承認したユーザー {user_id: 承認時刻}
-        self.rejections = {}            # 却下したユーザー {user_id: 却下時刻}
+        self.rejections = {}            # 却下したユーザー {user_id: リジェクト時刻}
         self.reject_timer = None        # 却下タイマー（5分後に確定）
         self.approved = False           # 承認済みフラグ
         self.rejected = False           # リジェクト済みフラグ
@@ -65,7 +66,7 @@ class ReviewRequest:
         if user in self.rejections:
             del self.rejections[user]
 
-# レビュー申請メッセージの更新（現状の承認件数などを反映）
+# レビュー申請メッセージの更新（現状の承認件数やリジェクト情報を反映）
 def update_review_message(review: ReviewRequest):
     approvals_count = len(review.approvals)
     message = (
@@ -78,6 +79,19 @@ def update_review_message(review: ReviewRequest):
         message += "→ 承認済み。投稿可能です。"
     elif review.rejected:
         message += "→ リジェクト済み。"
+    elif review.rejections:
+        # 最初にリジェクトしたユーザーと時刻を取得
+        first_reject_time_str = min(review.rejections.values())
+        first_rejecter = next(user for user, t in review.rejections.items() if t == first_reject_time_str)
+        dt = datetime.datetime.strptime(first_reject_time_str, "%Y-%m-%d-%H:%M")
+        formal_dt = dt + datetime.timedelta(minutes=5)
+        formal_time_str = formal_dt.strftime("%Y-%m-%d-%H:%M")
+        message += (
+            f"\n<@{first_rejecter}>さんが{first_reject_time_str}にリジェクトしました。"
+            f" 5分後の{formal_time_str}に正式に拒否されます。"
+            " 間違って押した場合は5分以内に取り消しして下さい。"
+        )
+        message += "\n許可の場合は :review_accept: 、却下の場合は :review_reject: を押してください。"
     else:
         message += "許可の場合は :review_accept: 、却下の場合は :review_reject: を押してください。"
     
@@ -226,6 +240,9 @@ def handle_reaction_removed(event, logger):
 
     if reaction == "review_accept":
         review.remove_approval(user)
+        # 承認数が規定値未満の場合は、承認済み状態を解除する
+        if review.approved and len(review.approvals) < REQUIRED_APPROVALS:
+            review.approved = False
         update_review_message(review)
 
     elif reaction == "review_reject":
