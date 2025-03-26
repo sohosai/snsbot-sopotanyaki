@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>投稿レビュー申請完了</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 600px;
+            width: 100%;
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        .success-icon {
+            color: #36B37E;
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+        h1 {
+            color: #1d1c1d;
+            margin-bottom: 20px;
+        }
+        p {
+            color: #616061;
+            font-size: 18px;
+            margin-bottom: 30px;
+        }
+        .back-btn {
+            background-color: #4A154B;
+            color: white;
+            text-decoration: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            font-weight: bold;
+            display: inline-block;
+            transition: background-color 0.3s;
+        }
+        .back-btn:hover {
+            background-color: #611f5e;
+        }
+        .info {
+            margin-top: 30px;
+            padding: 15px;
+            background-color: #f8f8f8;
+            border-left: 4px solid #4A154B;
+            text-align: left;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="success-icon">✓</div>
+        <h1>レビュー申請が完了しました</h1>
+        <p>投稿内容がSlackチャンネルに送信され、レビュープロセスが開始されました。</p>
+        
+        <div class="info">
+            <p>レビュワーが内容を確認して承認または却下します。</p>
+            <p>承認されるとSlackで通知が届きます。その後、<code>/post</code>コマンドで実際の投稿を実行できます。</p>
+        </div>
+        
+        <a href="javascript:window.close();" class="back-btn">閉じる</a>
+    </div>
+</body>
+</html>

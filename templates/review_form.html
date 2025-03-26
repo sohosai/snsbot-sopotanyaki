@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SNS投稿レビュー申請</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #1d1c1d;
+            margin-bottom: 30px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+        input[type="text"], select, textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        textarea {
+            height: 150px;
+            resize: vertical;
+        }
+        .file-upload {
+            border: 2px dashed #ddd;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            background-color: #f9f9f9;
+        }
+        .preview-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .preview-image {
+            width: 150px;
+            height: 150px;
+            object-fit: cover;
+            border-radius: 4px;
+        }
+        .submit-btn {
+            background-color: #4A154B;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            font-size: 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            width: 100%;
+            font-weight: bold;
+        }
+        .submit-btn:hover {
+            background-color: #611f5e;
+        }
+        .error {
+            color: #e01e5a;
+            margin-top: 5px;
+        }
+        .flash-message {
+            padding: 10px;
+            background-color: #e01e5a;
+            color: white;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        select {
+            appearance: none;
+            background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23131313%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E");
+            background-repeat: no-repeat;
+            background-position: right 10px top 50%;
+            background-size: 12px auto;
+            padding-right: 30px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SNS投稿レビュー申請</h1>
+        
+        {% if get_flashed_messages() %}
+            <div class="flash-message">
+                {{ get_flashed_messages()[0] }}
+            </div>
+        {% endif %}
+        
+        <form action="/submit_review" method="post" enctype="multipart/form-data">
+            <input type="hidden" name="user_id" value="{{ user_id }}">
+            <input type="hidden" name="channel_id" value="{{ channel_id }}">
+            
+            <div class="form-group">
+                <label for="sns">SNS種別</label>
+                <select id="sns" name="sns" required>
+                    <option value="" disabled selected>選択してください</option>
+                    <option value="Twitter">Twitter</option>
+                    <option value="Facebook">Facebook</option>
+                    <option value="Instagram">Instagram</option>
+                    <option value="LinkedIn">LinkedIn</option>
+                    <option value="TikTok">TikTok</option>
+                    <option value="YouTube">YouTube</option>
+                    <option value="その他">その他</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label for="account">投稿アカウント</label>
+                <input type="text" id="account" name="account" placeholder="投稿先のアカウント名" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="post_text">投稿本文</label>
+                <textarea id="post_text" name="post_text" placeholder="投稿する内容を入力してください" required></textarea>
+                <div id="character-count">0 / 280</div>
+            </div>
+            
+            <div class="form-group">
+                <label>画像（最大3枚まで）</label>
+                <div class="file-upload">
+                    <input type="file" id="image-upload" name="images" accept="image/*" multiple onchange="previewImages(event)">
+                    <p>ここにファイルをドラッグするか、クリックして選択</p>
+                </div>
+                <div class="preview-container" id="image-preview"></div>
+                <div id="image-count">0 / 3</div>
+            </div>
+            
+            <button type="submit" class="submit-btn">レビュー申請を送信</button>
+        </form>
+    </div>
+
+    <script>
+        // 文字数カウント
+        const textArea = document.getElementById('post_text');
+        const charCount = document.getElementById('character-count');
+        
+        textArea.addEventListener('input', function() {
+            const count = this.value.length;
+            charCount.textContent = `${count} / 280`;
+            
+            if (count > 280) {
+                charCount.style.color = '#e01e5a';
+            } else {
+                charCount.style.color = 'inherit';
+            }
+        });
+        
+        // 画像プレビュー
+        function previewImages(event) {
+            const preview = document.getElementById('image-preview');
+            const imageCount = document.getElementById('image-count');
+            preview.innerHTML = '';
+            
+            const files = event.target.files;
+            
+            if (files.length > 3) {
+                alert('画像は最大3枚までアップロードできます');
+                event.target.value = '';
+                imageCount.textContent = '0 / 3';
+                return;
+            }
+            
+            imageCount.textContent = `${files.length} / 3`;
+            
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                
+                if (!file.type.startsWith('image/')) {
+                    continue;
+                }
+                
+                const img = document.createElement('img');
+                img.classList.add('preview-image');
+                img.file = file;
+                preview.appendChild(img);
+                
+                const reader = new FileReader();
+                reader.onload = (function(aImg) {
+                    return function(e) {
+                        aImg.src = e.target.result;
+                    };
+                })(img);
+                
+                reader.readAsDataURL(file);
+            }
+        }
+        
+        // ドラッグ&ドロップ
+        const dropArea = document.querySelector('.file-upload');
+        
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, preventDefaults, false);
+        });
+        
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropArea.addEventListener(eventName, highlight, false);
+        });
+        
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, unhighlight, false);
+        });
+        
+        function highlight() {
+            dropArea.style.borderColor = '#4A154B';
+            dropArea.style.backgroundColor = '#f0e8f0';
+        }
+        
+        function unhighlight() {
+            dropArea.style.borderColor = '#ddd';
+            dropArea.style.backgroundColor = '#f9f9f9';
+        }
+        
+        dropArea.addEventListener('drop', handleDrop, false);
+        
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            const fileInput = document.getElementById('image-upload');
+            
+            if (files.length > 3) {
+                alert('画像は最大3枚までアップロードできます');
+                return;
+            }
+            
+            fileInput.files = files;
+            previewImages({target: {files: files}});
+        }
+    </script>
+</body>
+</html>
