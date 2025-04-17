@@ -1,7 +1,7 @@
 # Slack Bot 環境設定
 
 ## 依存パッケージ
-以下のパッケージが必要です。
+以下のパッケージ以上が必要です。
 
 - `slack-bolt==1.22.0`
 - `python-dotenv==0.21.0`
@@ -20,6 +20,11 @@
 
 ### 決議数
 - `REQUIRED_APPROVALS`
+
+### システム設定
+- `JWT_Aexpiresin`
+- `BASE_URL`
+- `PORT`
 
 ## Scopes
 
