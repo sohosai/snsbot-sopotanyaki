@@ -126,8 +126,7 @@
             </div>
         {% endif %}
         
-        <form action="/submit_review" method="post" enctype="multipart/form-data" id="reviewForm">
-            <input type="hidden" name="user_id" value="{{ user_id }}">
+        <form action="/submit_review?token={{ request.args.get('token') }}" method="post" enctype="multipart/form-data" id="reviewForm">            <input type="hidden" name="user_id" value="{{ user_id }}">
             <input type="hidden" name="channel_id" value="{{ channel_id }}">
             
             <div class="form-group">

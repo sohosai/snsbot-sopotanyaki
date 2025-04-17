@@ -88,7 +88,7 @@
             <h3>添付画像 ({{ review.images|length }}枚)</h3>
             <div class="image-gallery">
                 {% for image in review.images %}
-                <img src="{{ url_for('get_image', request_id=request_id, filename=image) }}" class="preview-image" alt="投稿画像 {{ loop.index }}">
+                <img src="{{ url_for('get_image', request_id=request_id, filename=image) }}?token={{ image_token }}" class="preview-image" alt="投稿画像 {{ loop.index }}">
                 {% endfor %}
             </div>
             {% endif %}

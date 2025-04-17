@@ -23,6 +23,7 @@
 
 ### システム設定
 - `JWT_Aexpiresin`
+- `JWT_SECRET`
 - `BASE_URL`
 - `PORT`
 

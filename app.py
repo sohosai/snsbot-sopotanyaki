@@ -8,11 +8,13 @@ import json
 import requests
 import uuid
 import base64
+import jwt  
 from io import BytesIO
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from flask import Flask, render_template, request, redirect, url_for, flash, session, send_file
 from dotenv import load_dotenv
+from urllib.parse import urlencode  
 load_dotenv()
 
 logging.basicConfig(level=logging.DEBUG)
@@ -21,6 +23,8 @@ logger = logging.getLogger(__name__)
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 SIGNING_SECRET = os.environ.get("SIGNING_SECRET")
 SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
+JWT_SECRET = os.environ.get("JWT_SECRET", "super_secret_key")  # JWT secret key
+JWT_EXPIRES_IN = int(os.environ.get("JWT_EXPIRES_IN", "3600"))  # Expiration time in seconds (default 1 hour)
 
 REVIEWER_IDS = [uid for uid in os.environ.get("REVIEWER_IDS", "").split(",") if uid.strip()]
 REQUIRED_APPROVALS = int(os.environ.get("REQUIRED_APPROVALS", "1"))
@@ -47,6 +51,65 @@ app = App(token=SLACK_BOT_TOKEN, signing_secret=SIGNING_SECRET)
 
 # レビューリクエストをIDベースで保存する辞書
 review_requests = {}
+
+# JWT関連の関数
+def generate_jwt_token(payload):
+    """
+    JWTトークンを生成する関数
+    Args:
+        payload: トークンに含めるデータ (dict)
+    Returns:
+        str: エンコードされたJWTトークン
+    """
+    expiration = datetime.datetime.utcnow() + datetime.timedelta(seconds=JWT_EXPIRES_IN)
+    payload["exp"] = expiration
+    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+def verify_jwt_token(token):
+    """
+    JWTトークンを検証する関数
+    Args:
+        token: 検証するJWTトークン
+    Returns:
+        dict: デコードされたペイロードまたはNone（無効な場合）
+    """
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        return payload
+    except jwt.ExpiredSignatureError:
+        logger.error("JWTトークンの有効期限が切れています")
+        return None
+    except jwt.InvalidTokenError:
+        logger.error("無効なJWTトークンです")
+        return None
+
+# セキュアなURLを生成する関数
+def generate_secure_url(base_url, path, params=None):
+    """
+    JWT認証付きのURLを生成する
+    Args:
+        base_url: ベースとなるURL
+        path: パス部分
+        params: クエリパラメータ (dict, optional)
+    Returns:
+        str: 生成されたURL
+    """
+    # パラメータがない場合は空のdictで初期化
+    if params is None:
+        params = {}
+    
+    # JWTトークンを生成
+    token = generate_jwt_token(params)
+    
+    # URLを構築
+    if not base_url.endswith('/'):
+        base_url += '/'
+    
+    if path.startswith('/'):
+        path = path[1:]
+    
+    url = f"{base_url}{path}?token={token}"
+    return url
 
 # SNSアカウント情報をJSONから読み込む
 def load_sns_accounts():
@@ -142,11 +205,9 @@ def build_review_blocks(review: ReviewRequest) -> list:
     else:
         description_text += "\n許可の場合は :review_accept:、却下の場合は :review_reject: を押してください。"
     
-    # プレビューページへのリンクを追加
+    # プレビューページへのリンクを追加（JWT認証付き）
     base_url = os.environ.get("BASE_URL", "http://localhost:5000/")
-    if not base_url.endswith('/'):
-        base_url += '/'
-    preview_url = f"{base_url}preview/{review.request_id}"
+    preview_url = generate_secure_url(base_url, f"preview/{review.request_id}", {"request_id": review.request_id})
     
     blocks = [
         {
@@ -201,10 +262,13 @@ def handle_review_command(ack, body, logger):
     channel_id = body["channel_id"]
     
     base_url = os.environ.get("BASE_URL", "http://localhost:5000/")
-    if not base_url.endswith('/'):
-        base_url += '/'
     
-    review_url = f"{base_url}review_form?user_id={user_id}&channel_id={channel_id}"
+    # JWTトークン付きのURLを生成
+    params = {
+        "user_id": user_id,
+        "channel_id": channel_id
+    }
+    review_url = generate_secure_url(base_url, "review_form", params)
     
     app.client.chat_postEphemeral(
         channel=channel_id,
@@ -406,10 +470,40 @@ def handle_post_command(ack, body, logger):
     )
 
 
+# JWTトークンの検証を行うデコレータ
+def require_jwt_auth(f):
+    """
+    JWTトークンの検証を行うデコレータ
+    """
+    def decorated_function(*args, **kwargs):
+        token = request.args.get('token')
+        if not token:
+            return "認証が必要です", 401
+        
+        payload = verify_jwt_token(token)
+        if not payload:
+            return "無効なトークンまたは期限切れです", 401
+        
+        # JWTペイロードからリクエストパラメータを設定
+        for key, value in payload.items():
+            if key != 'exp':  # expは有効期限なので除外
+                request.jwt_data = getattr(request, 'jwt_data', {})
+                request.jwt_data[key] = value
+        
+        return f(*args, **kwargs)
+    
+    # FlaskでデコレータをMETHOD名に合わせて設定
+    decorated_function.__name__ = f.__name__
+    return decorated_function
+
+
 @flask_app.route("/review_form")
+@require_jwt_auth
 def review_form():
-    user_id = request.args.get("user_id")
-    channel_id = request.args.get("channel_id")
+    # ユーザーIDとチャンネルIDをJWTペイロードから取得
+    user_id = request.jwt_data.get("user_id")
+    channel_id = request.jwt_data.get("channel_id")
+    
     if not user_id or not channel_id:
         return "Invalid parameters", 400
     
@@ -421,6 +515,7 @@ def review_form():
 
 
 @flask_app.route("/submit_review", methods=["POST"])
+@require_jwt_auth
 def submit_review():
     global review_requests
     
@@ -483,22 +578,38 @@ def submit_review():
     # 送信完了画面に遷移
     return render_template("submission_success.html")
 
-
 @flask_app.route("/preview/<request_id>")
+@require_jwt_auth
 def preview_post(request_id):
+    # JWTトークンからリクエストIDを検証
+    token_request_id = request.jwt_data.get("request_id")
+    
+    if token_request_id != request_id:
+        return "不正なアクセスです", 403
+        
     if request_id not in review_requests:
         return "投稿が見つかりません", 404
     
     review = review_requests[request_id]
     
+    # 画像取得用の新しいトークンを生成（request_idを含める）
+    image_token = generate_jwt_token({"request_id": request_id})
+    
     return render_template("preview.html", 
                           review=review,
-                          request_id=request_id)
-
+                          request_id=request_id,
+                          image_token=image_token)
 
 @flask_app.route("/image/<request_id>/<filename>")
+@require_jwt_auth
 def get_image(request_id, filename):
     """画像をダウンロードするエンドポイント"""
+    # JWTトークンからリクエストIDを検証
+    token_request_id = request.jwt_data.get("request_id")
+    
+    if token_request_id != request_id:
+        return "不正なアクセスです", 403
+        
     if request_id not in review_requests:
         return "投稿が見つかりません", 404
     
@@ -546,6 +657,7 @@ if __name__ == "__main__":
     print(f"レビュワー: {REVIEWER_IDS}")
     print(f"必要承認数: {REQUIRED_APPROVALS}")
     print(f"利用可能なSNS: {list(SNS_ACCOUNTS.keys())}")
+    print(f"JWT有効期限: {JWT_EXPIRES_IN}秒")
     print(f"===============")
     
     import sys
