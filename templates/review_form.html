@@ -114,6 +114,10 @@
             background-size: 12px auto;
             padding-right: 30px;
         }
+        /* アカウント選択セレクトが非表示の場合 */
+        .hidden {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -126,26 +130,25 @@
             </div>
         {% endif %}
         
-        <form action="/submit_review?token={{ request.args.get('token') }}" method="post" enctype="multipart/form-data" id="reviewForm">            <input type="hidden" name="user_id" value="{{ user_id }}">
+        <form action="/submit_review?token={{ request.args.get('token') }}" method="post" enctype="multipart/form-data" id="reviewForm">
+            <input type="hidden" name="user_id" value="{{ user_id }}">
             <input type="hidden" name="channel_id" value="{{ channel_id }}">
             
             <div class="form-group">
                 <label for="sns">SNS種別</label>
                 <select id="sns" name="sns" required>
                     <option value="" disabled selected>選択してください</option>
-                    <option value="Twitter">Twitter</option>
-                    <option value="Facebook">Facebook</option>
-                    <option value="Instagram">Instagram</option>
-                    <option value="LinkedIn">LinkedIn</option>
-                    <option value="TikTok">TikTok</option>
-                    <option value="YouTube">YouTube</option>
-                    <option value="その他">その他</option>
+                    {% for sns_name in sns_accounts %}
+                    <option value="{{ sns_name }}">{{ sns_name }}</option>
+                    {% endfor %}
                 </select>
             </div>
             
             <div class="form-group">
                 <label for="account">投稿アカウント</label>
-                <input type="text" id="account" name="account" placeholder="投稿先のアカウント名" required>
+                <select id="account" name="account" required>
+                    <option value="" disabled selected>SNSを先に選択してください</option>
+                </select>
             </div>
             
             <div class="form-group">
@@ -171,8 +174,45 @@
     </div>
 
     <script>
+        // SNSアカウント情報をJavaScriptオブジェクトとして格納
+        const snsAccounts = JSON.parse('{{ sns_accounts|tojson }}');
+        
         // 追加された画像ファイルを保持する配列
         let uploadedFiles = [];
+        
+        // SNSが選択されたときのイベントハンドラ
+        document.getElementById('sns').addEventListener('change', function() {
+            const snsName = this.value;
+            const accountSelect = document.getElementById('account');
+            
+            // アカウントセレクトをクリア
+            accountSelect.innerHTML = '';
+            
+            // 選択されたSNSに対応するアカウント選択肢を追加
+            if (snsName && snsAccounts[snsName]) {
+                const defaultOption = document.createElement('option');
+                defaultOption.value = '';
+                defaultOption.disabled = true;
+                defaultOption.selected = true;
+                defaultOption.textContent = 'アカウントを選択してください';
+                accountSelect.appendChild(defaultOption);
+                
+                snsAccounts[snsName].forEach(accountName => {
+                    const option = document.createElement('option');
+                    option.value = accountName;
+                    option.textContent = accountName;
+                    accountSelect.appendChild(option);
+                });
+            } else {
+                // SNSが選択されていない場合
+                const defaultOption = document.createElement('option');
+                defaultOption.value = '';
+                defaultOption.disabled = true;
+                defaultOption.selected = true;
+                defaultOption.textContent = 'SNSを先に選択してください';
+                accountSelect.appendChild(defaultOption);
+            }
+        });
         
         // 文字数カウント
         const textArea = document.getElementById('post_text');
