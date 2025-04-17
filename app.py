@@ -480,17 +480,24 @@ def require_jwt_auth(f):
         if not token:
             return "認証が必要です", 401
         
-        payload = verify_jwt_token(token)
-        if not payload:
-            return "無効なトークンまたは期限切れです", 401
-        
-        # JWTペイロードからリクエストパラメータを設定
-        for key, value in payload.items():
-            if key != 'exp':  # expは有効期限なので除外
-                request.jwt_data = getattr(request, 'jwt_data', {})
-                request.jwt_data[key] = value
-        
-        return f(*args, **kwargs)
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            # 毎回新しいjwt_dataオブジェクトを作成する
+            request.jwt_data = {}
+            for key, value in payload.items():
+                if key != 'exp':  # expは有効期限なので除外
+                    request.jwt_data[key] = value
+            
+            return f(*args, **kwargs)
+        except jwt.ExpiredSignatureError:
+            logger.error("JWTトークンの有効期限が切れています")
+            return "トークンの有効期限が切れています", 401
+        except jwt.InvalidTokenError as e:
+            logger.error(f"無効なJWTトークンです: {e}")
+            return "無効なトークンです", 401
+        except Exception as e:
+            logger.error(f"JWT検証中のエラー: {e}")
+            return "認証エラーが発生しました", 401
     
     # FlaskでデコレータをMETHOD名に合わせて設定
     decorated_function.__name__ = f.__name__
@@ -601,15 +608,8 @@ def preview_post(request_id):
                           image_token=image_token)
 
 @flask_app.route("/image/<request_id>/<filename>")
-@require_jwt_auth
 def get_image(request_id, filename):
     """画像をダウンロードするエンドポイント"""
-    # JWTトークンからリクエストIDを検証
-    token_request_id = request.jwt_data.get("request_id")
-    
-    if token_request_id != request_id:
-        return "不正なアクセスです", 403
-        
     if request_id not in review_requests:
         return "投稿が見つかりません", 404
     
@@ -624,6 +624,7 @@ def get_image(request_id, filename):
         return "ファイルが見つかりません", 404
     
     return send_file(file_path)
+    
 
 
 @flask_app.route("/")
