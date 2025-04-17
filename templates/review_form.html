@@ -64,6 +64,23 @@
             object-fit: cover;
             border-radius: 4px;
         }
+        .preview-item {
+            position: relative;
+        }
+        .remove-image {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background-color: rgba(255, 255, 255, 0.8);
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            text-align: center;
+            line-height: 24px;
+            cursor: pointer;
+            font-weight: bold;
+            color: #e01e5a;
+        }
         .submit-btn {
             background-color: #4A154B;
             color: white;
@@ -109,7 +126,7 @@
             </div>
         {% endif %}
         
-        <form action="/submit_review" method="post" enctype="multipart/form-data">
+        <form action="/submit_review" method="post" enctype="multipart/form-data" id="reviewForm">
             <input type="hidden" name="user_id" value="{{ user_id }}">
             <input type="hidden" name="channel_id" value="{{ channel_id }}">
             
@@ -140,12 +157,14 @@
             
             <div class="form-group">
                 <label>画像（最大4枚まで）</label>
-                <div class="file-upload">
-                    <input type="file" id="image-upload" name="images" accept="image/*" multiple onchange="previewImages(event)">
+                <div class="file-upload" id="dropArea">
+                    <input type="file" id="image-upload" accept="image/*" multiple>
                     <p>ここにファイルをドラッグするか、クリックして選択</p>
                 </div>
                 <div class="preview-container" id="image-preview"></div>
                 <div id="image-count">0 / 4</div>
+                <!-- 実際のフォーム送信用の隠しinput要素 -->
+                <div id="hidden-file-inputs"></div>
             </div>
             
             <button type="submit" class="submit-btn">レビュー申請を送信</button>
@@ -153,6 +172,9 @@
     </div>
 
     <script>
+        // 追加された画像ファイルを保持する配列
+        let uploadedFiles = [];
+        
         // 文字数カウント
         const textArea = document.getElementById('post_text');
         const charCount = document.getElementById('character-count');
@@ -168,48 +190,92 @@
             }
         });
         
-        // 画像プレビュー
-        function previewImages(event) {
-            const preview = document.getElementById('image-preview');
-            const imageCount = document.getElementById('image-count');
-            preview.innerHTML = '';
+        // ファイル選択が変更された時の処理
+        document.getElementById('image-upload').addEventListener('change', function(e) {
+            handleFiles(e.target.files);
+        });
+        
+        // ファイルの処理
+        function handleFiles(files) {
+            if (!files || files.length === 0) return;
             
-            const files = event.target.files;
-            
-            if (files.length > 4) {
+            // 現在の画像数と追加される画像数の合計が4を超える場合
+            if (uploadedFiles.length + files.length > 4) {
                 alert('画像は最大4枚までアップロードできます');
-                event.target.value = '';
-                imageCount.textContent = '0 / 4';
                 return;
             }
             
-            imageCount.textContent = `${files.length} / 4`;
-            
+            // 選択されたファイルを配列に追加
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
+                if (!file.type.startsWith('image/')) continue;
                 
-                if (!file.type.startsWith('image/')) {
-                    continue;
-                }
+                uploadedFiles.push(file);
+            }
+            
+            // 画像のプレビューを更新
+            updatePreview();
+        }
+        
+        // プレビューの更新
+        function updatePreview() {
+            const preview = document.getElementById('image-preview');
+            const imageCount = document.getElementById('image-count');
+            const hiddenInputs = document.getElementById('hidden-file-inputs');
+            
+            // プレビューをクリア
+            preview.innerHTML = '';
+            hiddenInputs.innerHTML = '';
+            
+            // カウンター更新
+            imageCount.textContent = `${uploadedFiles.length} / 4`;
+            
+            // 各ファイルのプレビューを作成
+            uploadedFiles.forEach((file, index) => {
+                // プレビュー要素の作成
+                const previewItem = document.createElement('div');
+                previewItem.classList.add('preview-item');
                 
                 const img = document.createElement('img');
                 img.classList.add('preview-image');
-                img.file = file;
-                preview.appendChild(img);
+                previewItem.appendChild(img);
                 
+                // 削除ボタンの追加
+                const removeBtn = document.createElement('div');
+                removeBtn.classList.add('remove-image');
+                removeBtn.textContent = '×';
+                removeBtn.addEventListener('click', function() {
+                    uploadedFiles.splice(index, 1);
+                    updatePreview();
+                });
+                previewItem.appendChild(removeBtn);
+                
+                preview.appendChild(previewItem);
+                
+                // 画像のプレビュー表示
                 const reader = new FileReader();
-                reader.onload = (function(aImg) {
-                    return function(e) {
-                        aImg.src = e.target.result;
-                    };
-                })(img);
-                
+                reader.onload = function(e) {
+                    img.src = e.target.result;
+                };
                 reader.readAsDataURL(file);
-            }
+                
+                // フォーム送信用のhidden input要素を作成
+                const fileInput = document.createElement('input');
+                fileInput.type = 'file';
+                fileInput.name = 'images';
+                fileInput.style.display = 'none';
+                
+                // FileListオブジェクトの作成
+                const dataTransfer = new DataTransfer();
+                dataTransfer.items.add(file);
+                fileInput.files = dataTransfer.files;
+                
+                hiddenInputs.appendChild(fileInput);
+            });
         }
         
-        // ドラッグ&ドロップ
-        const dropArea = document.querySelector('.file-upload');
+        // ドラッグ&ドロップの処理
+        const dropArea = document.getElementById('dropArea');
         
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
             dropArea.addEventListener(eventName, preventDefaults, false);
@@ -238,21 +304,20 @@
             dropArea.style.backgroundColor = '#f9f9f9';
         }
         
-        dropArea.addEventListener('drop', handleDrop, false);
-        
-        function handleDrop(e) {
+        dropArea.addEventListener('drop', function(e) {
             const dt = e.dataTransfer;
             const files = dt.files;
-            const fileInput = document.getElementById('image-upload');
             
-            if (files.length > 4) {
+            handleFiles(files);
+        });
+        
+        // フォーム送信前の処理
+        document.getElementById('reviewForm').addEventListener('submit', function(e) {
+            if (uploadedFiles.length > 4) {
+                e.preventDefault();
                 alert('画像は最大4枚までアップロードできます');
-                return;
             }
-            
-            fileInput.files = files;
-            previewImages({target: {files: files}});
-        }
+        });
     </script>
 </body>
 </html>
