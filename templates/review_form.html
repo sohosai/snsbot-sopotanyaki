@@ -139,13 +139,13 @@
             </div>
             
             <div class="form-group">
-                <label>画像（最大3枚まで）</label>
+                <label>画像（最大4枚まで）</label>
                 <div class="file-upload">
                     <input type="file" id="image-upload" name="images" accept="image/*" multiple onchange="previewImages(event)">
                     <p>ここにファイルをドラッグするか、クリックして選択</p>
                 </div>
                 <div class="preview-container" id="image-preview"></div>
-                <div id="image-count">0 / 3</div>
+                <div id="image-count">0 / 4</div>
             </div>
             
             <button type="submit" class="submit-btn">レビュー申請を送信</button>
@@ -176,14 +176,14 @@
             
             const files = event.target.files;
             
-            if (files.length > 3) {
-                alert('画像は最大3枚までアップロードできます');
+            if (files.length > 4) {
+                alert('画像は最大4枚までアップロードできます');
                 event.target.value = '';
-                imageCount.textContent = '0 / 3';
+                imageCount.textContent = '0 / 4';
                 return;
             }
             
-            imageCount.textContent = `${files.length} / 3`;
+            imageCount.textContent = `${files.length} / 4`;
             
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
@@ -245,8 +245,8 @@
             const files = dt.files;
             const fileInput = document.getElementById('image-upload');
             
-            if (files.length > 3) {
-                alert('画像は最大3枚までアップロードできます');
+            if (files.length > 4) {
+                alert('画像は最大4枚までアップロードできます');
                 return;
             }
             
