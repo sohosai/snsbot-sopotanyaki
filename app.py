@@ -6,9 +6,12 @@ import datetime
 import re
 import json
 import requests
+import uuid
+import base64
+from io import BytesIO
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
-from flask import Flask, render_template, request, redirect, url_for, flash, session
+from flask import Flask, render_template, request, redirect, url_for, flash, session, send_file
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -25,10 +28,15 @@ REQUIRED_APPROVALS = int(os.environ.get("REQUIRED_APPROVALS", "1"))
 current_dir = os.path.dirname(os.path.abspath(__file__))
 template_dir = os.path.join(current_dir, 'templates')
 static_dir = os.path.join(current_dir, 'static')
+uploads_dir = os.path.join(current_dir, 'uploads')
 
 if not os.path.exists(template_dir):
     os.makedirs(template_dir)
     print(f"テンプレートディレクトリを作成しました: {template_dir}")
+
+if not os.path.exists(uploads_dir):
+    os.makedirs(uploads_dir)
+    print(f"アップロードディレクトリを作成しました: {uploads_dir}")
 
 flask_app = Flask(__name__, 
                  template_folder=template_dir,
@@ -37,7 +45,8 @@ flask_app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev_secret_key")
 
 app = App(token=SLACK_BOT_TOKEN, signing_secret=SIGNING_SECRET)
 
-review_request = None
+# レビューリクエストをIDベースで保存する辞書
+review_requests = {}
 
 # SNSアカウント情報をJSONから読み込む
 def load_sns_accounts():
@@ -47,7 +56,9 @@ def load_sns_accounts():
             return json.load(f)
     except Exception as e:
         logger.error(f"SNSアカウント情報の読み込みに失敗しました: {e}")
-        return {}
+        return {"Twitter": ["公式アカウント", "部門アカウント"], 
+                "Facebook": ["公式ページ"], 
+                "Instagram": ["公式アカウント"]}
 
 # SNSアカウント情報をグローバル変数として保存
 SNS_ACCOUNTS = load_sns_accounts()
@@ -60,7 +71,7 @@ def push_sns(sns_type, account, text, images=None):
         sns_type: SNSの種類 (X, Instaなど)
         account: 投稿するアカウント名
         text: 投稿テキスト
-        images: 画像リスト（オプション）
+        images: 画像パスのリスト（オプション）
     Returns:
         bool: 成功したかどうか
     """
@@ -72,18 +83,20 @@ def push_sns(sns_type, account, text, images=None):
     return True
 
 class ReviewRequest:
-    def __init__(self, author, sns, account, text, images, channel, ts):
+    def __init__(self, author, sns, account, text, channel, request_id=None):
+        self.request_id = request_id if request_id else str(uuid.uuid4())
         self.author = author
         self.sns = sns
         self.account = account
         self.text = text
-        self.images = images
+        self.images = []  # 画像ファイル名のリスト
         self.channel = channel
-        self.ts = ts
+        self.ts = None  # Slackメッセージのタイムスタンプ（投稿時に設定）
         self.approvals = {}
         self.rejections = {}
         self.approved = False
         self.rejected = False
+        self.created_at = datetime.datetime.now()
 
     def add_approval(self, user, timestamp):
         self.approvals[user] = timestamp
@@ -99,13 +112,18 @@ class ReviewRequest:
         if user in self.rejections:
             del self.rejections[user]
             
+    def add_image(self, filename):
+        """画像ファイル名を追加する"""
+        self.images.append(filename)
+            
     def clear_images(self):
         """画像リストをクリアする"""
         self.images = []
         
     def execute_post(self):
         """実際にSNSに投稿する"""
-        return push_sns(self.sns, self.account, self.text, self.images)
+        image_paths = [os.path.join(uploads_dir, img) for img in self.images]
+        return push_sns(self.sns, self.account, self.text, image_paths)
 
 
 def build_review_blocks(review: ReviewRequest) -> list:
@@ -123,7 +141,13 @@ def build_review_blocks(review: ReviewRequest) -> list:
         description_text += "\n→ *リジェクト済み*。"
     else:
         description_text += "\n許可の場合は :review_accept:、却下の場合は :review_reject: を押してください。"
-
+    
+    # プレビューページへのリンクを追加
+    base_url = os.environ.get("BASE_URL", "http://localhost:5000/")
+    if not base_url.endswith('/'):
+        base_url += '/'
+    preview_url = f"{base_url}preview/{review.request_id}"
+    
     blocks = [
         {
             "type": "section",
@@ -132,38 +156,42 @@ def build_review_blocks(review: ReviewRequest) -> list:
         {"type": "divider"},
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*本文*\n```{review.text}```"}
+            "text": {"type": "mrkdwn", "text": f"*投稿内容をプレビュー:*\n{preview_url}"}
         }
     ]
-
-    # 画像を追加する（Slackの認証トークンを使用して画像を表示）
-    if review.images:
-        blocks.append({"type": "divider"})
-        for i, (file_id, permalink) in enumerate(review.images, start=1):
-            try:
-                # ファイル情報を取得
-                file_info = app.client.files_info(file=file_id)
-                if file_info["ok"]:
-                    # 認証付きのURLを使用（この方が確実）
-                    blocks.append({
-                        "type": "image",
-                        "image_url": file_info["file"]["url_private"],
-                        "alt_text": f"Attached image {i}"
-                    })
-            except Exception as e:
-                logger.error(f"画像情報取得エラー: {e}")
                 
     return blocks
 
 
 def update_review_message(review: ReviewRequest):
-    blocks = build_review_blocks(review)
-    app.client.chat_update(
-        channel=review.channel,
-        ts=review.ts,
-        text="レビュー内容を更新しました",
-        blocks=blocks
-    )
+    # レビューメッセージが存在しない場合は新規作成
+    if not review.ts:
+        reviewer_mentions = ' '.join(f'<@{uid}>' for uid in REVIEWER_IDS if uid.strip())
+        if reviewer_mentions:
+            review_message = f"<@{review.author}>さんの投稿レビューが {reviewer_mentions} に届いています。"
+        else:
+            review_message = f"<@{review.author}>さんの投稿レビューが届いています。レビュワーが設定されていません。"
+        
+        blocks = build_review_blocks(review)
+        
+        response = app.client.chat_postMessage(
+            channel=review.channel,
+            text=review_message,
+            blocks=blocks
+        )
+        review.ts = response["ts"]
+    else:
+        # 既存メッセージの更新
+        blocks = build_review_blocks(review)
+        try:
+            app.client.chat_update(
+                channel=review.channel,
+                ts=review.ts,
+                text="レビュー内容を更新しました",
+                blocks=blocks
+            )
+        except Exception as e:
+            logger.error(f"メッセージ更新エラー: {e}")
 
 
 @app.command("/review")
@@ -187,72 +215,75 @@ def handle_review_command(ack, body, logger):
 
 @app.event("reaction_added")
 def handle_reaction_added(event, logger):
-    global review_request
     reaction = event.get("reaction")
     user = event.get("user")
     item = event.get("item", {})
     ts = item.get("ts")
+    channel = item.get("channel")
     
-    if review_request is None or review_request.ts != ts:
-        return
-
-    if reaction == "review_accept":
-        # レビューが却下済みの場合は何もしない
-        if review_request.rejected:
-            return
-            
-        review_request.add_approval(user, time.strftime("%Y-%m-%d-%H:%M"))
-        
-        # 必要な承認数に達した場合すぐに承認
-        if len(review_request.approvals) >= REQUIRED_APPROVALS and not review_request.approved:
-            review_request.approved = True
-            
-            # まずレビューメッセージを更新
-            update_review_message(review_request)
-            
-            # 次に承認通知を送信
-            app.client.chat_postMessage(
-                channel=review_request.channel,
-                text=f"<@{review_request.author}>さんの投稿は必要数のレビュワーによって承認されました。"
-            )
-        else:
-            # 承認数が足りない場合は、通常のメッセージ更新のみ
-            update_review_message(review_request)
-            
-    elif reaction == "review_reject":
-        # 即座にリジェクト処理
-        if not review_request.rejected:
-            review_request.rejected = True
-            review_request.add_rejection(user, time.strftime("%Y-%m-%d-%H:%M"))
-            
-            # リジェクトメッセージを送信
-            app.client.chat_delete(channel=review_request.channel, ts=review_request.ts)
-            reject_message = f"<@{review_request.author}>さんの投稿は <@{user}>さんによってリジェクトされました。"
-            app.client.chat_postMessage(channel=review_request.channel, text=reject_message)
-            review_request = None
+    # tsに一致するレビューリクエストを探す
+    for request_id, review in review_requests.items():
+        if review.ts == ts and review.channel == channel:
+            if reaction == "review_accept":
+                # レビューが却下済みの場合は何もしない
+                if review.rejected:
+                    return
+                    
+                review.add_approval(user, time.strftime("%Y-%m-%d-%H:%M"))
+                
+                # 必要な承認数に達した場合すぐに承認
+                if len(review.approvals) >= REQUIRED_APPROVALS and not review.approved:
+                    review.approved = True
+                    
+                    # まずレビューメッセージを更新
+                    update_review_message(review)
+                    
+                    # 次に承認通知を送信
+                    app.client.chat_postMessage(
+                        channel=review.channel,
+                        text=f"<@{review.author}>さんの投稿は必要数のレビュワーによって承認されました。"
+                    )
+                else:
+                    # 承認数が足りない場合は、通常のメッセージ更新のみ
+                    update_review_message(review)
+                    
+            elif reaction == "review_reject":
+                # 即座にリジェクト処理
+                if not review.rejected:
+                    review.rejected = True
+                    review.add_rejection(user, time.strftime("%Y-%m-%d-%H:%M"))
+                    
+                    # リジェクトメッセージを送信
+                    reject_message = f"<@{review.author}>さんの投稿は <@{user}>さんによってリジェクトされました。"
+                    app.client.chat_postMessage(channel=review.channel, text=reject_message)
+                    
+                    # レビューリクエストの削除
+                    del review_requests[request_id]
+            break
 
 
 @app.event("reaction_removed")
 def handle_reaction_removed(event, logger):
-    global review_request
     reaction = event.get("reaction")
     user = event.get("user")
     item = event.get("item", {})
     ts = item.get("ts")
+    channel = item.get("channel")
     
-    if review_request is None or review_request.ts != ts:
-        return
+    # tsに一致するレビューリクエストを探す
+    for request_id, review in review_requests.items():
+        if review.ts == ts and review.channel == channel:
+            # リジェクト済みまたは承認済みの場合はリアクション削除の効果を無効化
+            if review.rejected or review.approved:
+                return
 
-    # リジェクト済みまたは承認済みの場合はリアクション削除の効果を無効化
-    if review_request.rejected or review_request.approved:
-        return
-
-    if reaction == "review_accept":
-        review_request.remove_approval(user)
-        update_review_message(review_request)
-    elif reaction == "review_reject":
-        review_request.remove_rejection(user)
-        update_review_message(review_request)
+            if reaction == "review_accept":
+                review.remove_approval(user)
+                update_review_message(review)
+            elif reaction == "review_reject":
+                review.remove_rejection(user)
+                update_review_message(review)
+            break
 
 
 @app.command("/register")
@@ -340,37 +371,39 @@ def handle_register_command(ack, body, logger):
 
 @app.command("/post")
 def handle_post_command(ack, body, logger):
-    global review_request
     ack()
     user_id = body["user_id"]
     channel_id = body["channel_id"]
 
-    if review_request is None or review_request.author != user_id or not review_request.approved:
-        app.client.chat_postEphemeral(
-            channel=channel_id,
-            user=user_id,
-            text="該当する承認済みの投稿が見つかりません。"
-        )
-        return
-
-    # SNSへの投稿を実行
-    success = review_request.execute_post()
+    # ユーザーが承認済みの投稿リクエストを探す
+    for request_id, review in list(review_requests.items()):
+        if review.author == user_id and review.approved:
+            # SNSへの投稿を実行
+            success = review.execute_post()
+            
+            if success:
+                # 投稿成功メッセージを送信
+                app.client.chat_postMessage(
+                    channel=channel_id,
+                    text=f"<@{user_id}>さんの投稿が{review.sns}で実行されました。"
+                )
+            else:
+                # 投稿失敗メッセージを送信
+                app.client.chat_postMessage(
+                    channel=channel_id,
+                    text=f"<@{user_id}>さんの投稿が{review.sns}で失敗しました。"
+                )
+            
+            # 投稿後、レビューリクエストを削除
+            del review_requests[request_id]
+            return
     
-    if success:
-        # 投稿成功メッセージを送信
-        app.client.chat_postMessage(
-            channel=channel_id,
-            text=f"<@{user_id}>さんの投稿が{review_request.sns}で実行されました。"
-        )
-    else:
-        # 投稿失敗メッセージを送信
-        app.client.chat_postMessage(
-            channel=channel_id,
-            text=f"<@{user_id}>さんの投稿が{review_request.sns}で失敗しました。"
-        )
-    
-    # 投稿後、レビューリクエストをクリア
-    review_request = None
+    # 該当する承認済み投稿がない場合
+    app.client.chat_postEphemeral(
+        channel=channel_id,
+        user=user_id,
+        text="該当する承認済みの投稿が見つかりません。"
+    )
 
 
 @flask_app.route("/review_form")
@@ -389,7 +422,7 @@ def review_form():
 
 @flask_app.route("/submit_review", methods=["POST"])
 def submit_review():
-    global review_request
+    global review_requests
     
     user_id = request.form.get("user_id")
     channel_id = request.form.get("channel_id")
@@ -411,81 +444,75 @@ def submit_review():
         flash("すべての必須フィールドを入力してください。")
         return redirect(url_for("review_form", user_id=user_id, channel_id=channel_id))
     
-    reviewer_mentions = ' '.join(f'<@{uid}>' for uid in REVIEWER_IDS if uid.strip())
-    if reviewer_mentions:
-        review_message = f"<@{user_id}>さんの投稿レビューが {reviewer_mentions} に認証依頼が届いています。"
-    else:
-        review_message = f"<@{user_id}>さんの投稿レビューが届いています。レビュワーが設定されていません。"
-    
-    response = app.client.chat_postMessage(
-        channel=channel_id,
-        text=review_message
-    )
-    ts = response["ts"]
-
-    review_request = ReviewRequest(
+    # 新しいレビューリクエストの作成
+    review = ReviewRequest(
         author=user_id,
         sns=sns,
         account=account,
         text=post_text,
-        images=[],  
-        channel=channel_id,
-        ts=ts
+        channel=channel_id
     )
     
-    # 先に本文のメッセージだけで更新
-    update_review_message(review_request)
-    
-    uploaded_images = []
+    # アップロードされた画像の処理
     files = request.files.getlist("images")
     
     for file in files:
         if file and file.filename:
             try:
-                temp_file_path = os.path.join("/tmp", file.filename)
-                file.save(temp_file_path)
+                # 一意のファイル名を生成
+                filename = f"{review.request_id}_{uuid.uuid4()}_{file.filename}"
+                file_path = os.path.join(uploads_dir, filename)
                 
-                # 直接メッセージに添付するための非公開アップロード
-                upload_res = app.client.files_upload_v2(
-                    file=temp_file_path,
-                    title=file.filename,
-                    # チャンネル指定なしでアップロード
-                )
+                # ファイルを保存
+                file.save(file_path)
+                logger.debug(f"画像ファイルを保存しました: {file_path}")
                 
-                os.remove(temp_file_path)
-                
-                if not upload_res["ok"]:
-                    raise Exception(f"ファイルアップロードエラー: {upload_res['error']}")
-                
-                file_info = upload_res["file"]
-                file_id = file_info["id"]
-                permalink = file_info.get("permalink", "")
-                
-                # ファイルを公開URLにする
-                try:
-                    app.client.files_sharedPublicURL(file=file_id)
-                except Exception as e:
-                    logger.debug(f"公開URLへの変換エラー: {e}")
-                
-                # ファイルをチャンネルと紐付ける
-                try:
-                    app.client.files_shareFilePublicly(file=file_id, channels=channel_id)
-                except Exception as e:
-                    logger.error(f"ファイル共有エラー: {e}")
-                
-                uploaded_images.append((file_id, permalink))
-                logger.debug(f"画像がアップロードされました: {file.filename}, file_id: {file_id}, permalink: {permalink}")
+                # レビューリクエストに画像を追加
+                review.add_image(filename)
                 
             except Exception as e:
-                logger.error(f"画像のアップロードに失敗しました: {e}")
-                flash(f"画像 {file.filename} のアップロードに失敗しました。レビューは作成されましたが、一部の画像は含まれていません。")
+                logger.error(f"画像の保存に失敗しました: {e}")
+                flash(f"画像 {file.filename} のアップロードに失敗しました。")
     
-    # 全ての画像をアップロードした後、一度だけメッセージを更新
-    if uploaded_images:
-        review_request.images = uploaded_images
-        update_review_message(review_request)
+    # レビューリクエストを保存
+    review_requests[review.request_id] = review
     
+    # Slackにメッセージを投稿
+    update_review_message(review)
+    
+    # 送信完了画面に遷移
     return render_template("submission_success.html")
+
+
+@flask_app.route("/preview/<request_id>")
+def preview_post(request_id):
+    if request_id not in review_requests:
+        return "投稿が見つかりません", 404
+    
+    review = review_requests[request_id]
+    
+    return render_template("preview.html", 
+                          review=review,
+                          request_id=request_id)
+
+
+@flask_app.route("/image/<request_id>/<filename>")
+def get_image(request_id, filename):
+    """画像をダウンロードするエンドポイント"""
+    if request_id not in review_requests:
+        return "投稿が見つかりません", 404
+    
+    review = review_requests[request_id]
+    
+    # リクエストに関連する画像か確認
+    if filename not in review.images:
+        return "画像が見つかりません", 404
+    
+    file_path = os.path.join(uploads_dir, filename)
+    if not os.path.exists(file_path):
+        return "ファイルが見つかりません", 404
+    
+    return send_file(file_path)
 
 
 @flask_app.route("/")

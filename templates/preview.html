@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>投稿内容プレビュー</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #1d1c1d;
+            margin-bottom: 30px;
+        }
+        .preview-box {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            background-color: #f9f9f9;
+        }
+        .meta-info {
+            margin-bottom: 15px;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 15px;
+        }
+        .meta-item {
+            margin-bottom: 5px;
+        }
+        .post-content {
+            white-space: pre-wrap;
+            margin-bottom: 20px;
+        }
+        .image-gallery {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        .preview-image {
+            width: 200px;
+            height: 200px;
+            object-fit: cover;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }
+        .back-btn {
+            background-color: #f2f2f2;
+            color: #333;
+            border: 1px solid #ddd;
+            padding: 10px 15px;
+            border-radius: 4px;
+            text-decoration: none;
+            display: inline-block;
+            margin-top: 20px;
+        }
+        .back-btn:hover {
+            background-color: #e6e6e6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>投稿内容プレビュー</h1>
+        
+        <div class="preview-box">
+            <div class="meta-info">
+                <div class="meta-item"><strong>投稿者:</strong> <@{{ review.author }}></div>
+                <div class="meta-item"><strong>SNS:</strong> {{ review.sns }}</div>
+                <div class="meta-item"><strong>アカウント:</strong> {{ review.account }}</div>
+            </div>
+            
+            <h3>投稿内容</h3>
+            <div class="post-content">{{ review.text }}</div>
+            
+            {% if review.images %}
+            <h3>添付画像 ({{ review.images|length }}枚)</h3>
+            <div class="image-gallery">
+                {% for image in review.images %}
+                <img src="{{ url_for('get_image', request_id=request_id, filename=image) }}" class="preview-image" alt="投稿画像 {{ loop.index }}">
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+        
+    </div>
+</body>
+</html>
